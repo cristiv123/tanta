@@ -12,6 +12,7 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
   const [status, setStatus] = useState<'connecting' | 'listening' | 'speaking'>('connecting');
   const [transcription, setTranscription] = useState('');
   const [aiResponse, setAiResponse] = useState('');
+  const [profile, setProfile] = useState('');
   
   const audioContextInRef = useRef<AudioContext | null>(null);
   const audioContextOutRef = useRef<AudioContext | null>(null);
@@ -19,20 +20,18 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const sessionRef = useRef<any>(null);
 
+  const fullConversationRef = useRef<string>('');
   const currentTurnUserText = useRef('');
   const currentTurnAiText = useRef('');
 
   useEffect(() => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-    
-    const setupLive = async () => {
-      // CITIREA MEMORIEI CHIAR ÎNAINTE DE CONECTARE
-      const pastHistory = memoryService.getFormattedMemory();
-      const currentProfile = memoryService.getUserProfile();
+    const currentProfile = memoryService.getUserProfile();
+    setProfile(currentProfile);
 
+    const setupLive = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        
         audioContextInRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
         audioContextOutRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
 
@@ -44,20 +43,16 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
               voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
             },
             systemInstruction: `
-              Ești un companion digital cald, răbdător și empatic numit 'Prietenul Bun'.
+              Ești 'Prietenul Bun', un companion cald pentru bătrâni. 
+              CONVERSAȚIA TREBUIE SĂ FIE ÎN LIMBA ROMÂNĂ.
               
-              CONTEXTUL TĂU (Ceea ce știi despre utilizator):
-              ${currentProfile}
-              
-              ISTORICUL RECENT:
-              ${pastHistory}
-              
-              INSTRUCȚIUNI CRITICE:
-              1. Vorbește EXCLUSIV în limba română, calm și cald (folosește 'dumneavoastră').
-              2. Dacă utilizatorul îți spune detalii despre viața lui (nume, copii, pasiuni, ce a mâncat, cum se simte), REȚINE-LE.
-              3. Folosește informațiile din "CONTEXTUL TĂU" pentru a personaliza discuția. Dacă știi cum îl cheamă, spune-i pe nume.
-              4. Fii concis. Nu ține prelegeri lungi.
-              5. Ești un prieten vechi care a trecut pe la el la o cafea.
+              CONTEXT UTILIZATOR: ${currentProfile}
+              ISTORIC: ${memoryService.getFormattedMemory()}
+
+              REGULI:
+              1. Imediat ce începe sesiunea, salută utilizatorul cald (ex: "Bună ziua! Mă bucur să ne auzim. Ce mai faceți astăzi?")
+              2. Fii empatic, folosește propoziții scurte și clare.
+              3. Ascultă cu răbdare.
             `,
             outputAudioTranscription: {},
             inputAudioTranscription: {},
@@ -67,15 +62,10 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
               setStatus('listening');
               const source = audioContextInRef.current!.createMediaStreamSource(stream);
               const scriptProcessor = audioContextInRef.current!.createScriptProcessor(4096, 1, 1);
-              
               scriptProcessor.onaudioprocess = (e) => {
                 const inputData = e.inputBuffer.getChannelData(0);
-                const pcmBlob = createBlob(inputData);
-                sessionPromise.then((session) => {
-                  session.sendRealtimeInput({ media: pcmBlob });
-                });
+                sessionPromise.then(s => s.sendRealtimeInput({ media: createBlob(inputData) }));
               };
-              
               source.connect(scriptProcessor);
               scriptProcessor.connect(audioContextInRef.current!.destination);
             },
@@ -84,33 +74,22 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
                 const text = message.serverContent.inputTranscription.text;
                 setTranscription(prev => prev + text);
                 currentTurnUserText.current += text;
+                fullConversationRef.current += " Utilizator: " + text;
               }
               if (message.serverContent?.outputTranscription) {
                 const text = message.serverContent.outputTranscription.text;
                 setAiResponse(prev => prev + text);
                 currentTurnAiText.current += text;
+                fullConversationRef.current += " AI: " + text;
               }
-              
               if (message.serverContent?.turnComplete) {
-                // SALVARE IMEDIATĂ LA FINALUL TURULUI
-                if (currentTurnUserText.current.trim()) {
-                  memoryService.saveTurn('user', currentTurnUserText.current);
-                }
-                if (currentTurnAiText.current.trim()) {
-                  memoryService.saveTurn('model', currentTurnAiText.current);
-                  // Opțional: Aici s-ar putea adăuga o logică de actualizare a profilului
-                  // Pentru simplitate, bazăm memoria pe istoricul recent care este injectat la start
-                }
-                
-                // Actualizăm profilul automat bazat pe tot ce am vorbit până acum (cea mai simplă formă de sumarizare este să cerem AI-ului să facă asta, dar aici ne bazăm pe istoric)
-                // Într-o versiune viitoare, am putea folosi un model separat de text pentru a actualiza Profilul.
-                
+                if (currentTurnUserText.current.trim()) memoryService.saveTurn('user', currentTurnUserText.current);
+                if (currentTurnAiText.current.trim()) memoryService.saveTurn('model', currentTurnAiText.current);
                 currentTurnUserText.current = '';
                 currentTurnAiText.current = '';
                 setTranscription('');
                 setAiResponse('');
               }
-
               const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
               if (base64Audio && audioContextOutRef.current) {
                 setStatus('speaking');
@@ -127,22 +106,12 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
                 nextStartTimeRef.current += audioBuffer.duration;
                 sourcesRef.current.add(source);
               }
-
-              if (message.serverContent?.interrupted) {
-                sourcesRef.current.forEach(s => s.stop());
-                sourcesRef.current.clear();
-                nextStartTimeRef.current = 0;
-                setStatus('listening');
-              }
-            },
-            onerror: (e) => console.error('Gemini Live Error:', e),
-            onclose: () => console.log('Session Closed'),
+            }
           }
         });
-
         sessionRef.current = await sessionPromise;
       } catch (err) {
-        console.error('Initializarea a esuat:', err);
+        console.error('Setup failed:', err);
         onStop();
       }
     };
@@ -150,10 +119,7 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
     setupLive();
 
     return () => {
-      // Încercăm o ultimă salvare a textului acumulat înainte de unmount
-      if (currentTurnUserText.current.trim()) memoryService.saveTurn('user', currentTurnUserText.current);
-      if (currentTurnAiText.current.trim()) memoryService.saveTurn('model', currentTurnAiText.current);
-
+      if (fullConversationRef.current) memoryService.updatePermanentProfile(fullConversationRef.current);
       if (sessionRef.current) sessionRef.current.close();
       if (audioContextInRef.current) audioContextInRef.current.close();
       if (audioContextOutRef.current) audioContextOutRef.current.close();
@@ -161,69 +127,58 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
   }, [onStop]);
 
   const createBlob = (data: Float32Array): Blob => {
-    const l = data.length;
-    const int16 = new Int16Array(l);
-    for (let i = 0; i < l; i++) {
-      int16[i] = data[i] * 32768;
-    }
-    return {
-      data: encode(new Uint8Array(int16.buffer)),
-      mimeType: 'audio/pcm;rate=16000',
-    };
+    const int16 = new Int16Array(data.length);
+    for (let i = 0; i < data.length; i++) int16[i] = data[i] * 32768;
+    return { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' };
   };
 
   return (
-    <div className="flex flex-col items-center justify-center space-y-12 text-center w-full max-w-2xl px-6">
-      <div className="relative">
-        <div className={`absolute inset-0 rounded-full bg-indigo-200 blur-xl opacity-50 ${status === 'listening' ? 'pulse-ring' : ''}`}></div>
-        <div className={`absolute inset-0 rounded-full bg-indigo-400 blur-2xl opacity-30 ${status === 'speaking' ? 'animate-pulse' : ''}`}></div>
-        
-        <div className={`relative w-48 h-48 rounded-full flex items-center justify-center transition-all duration-500 shadow-2xl ${status === 'speaking' ? 'bg-indigo-600 scale-110' : 'bg-indigo-500'}`}>
-          <div className="flex flex-col items-center">
+    <div className="flex flex-col items-center justify-between w-full h-screen max-w-4xl mx-auto p-8 relative">
+      <div className="w-full space-y-4">
+        <h1 className="text-3xl font-bold text-indigo-900 text-center">Prietenul Bun</h1>
+        <div className="bg-white/50 border border-white p-4 rounded-3xl shadow-sm">
+          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest mb-1 text-center">Ce am reținut:</p>
+          <p className="text-gray-600 italic text-center text-sm leading-tight">"{profile}"</p>
+        </div>
+      </div>
+
+      <div className="flex flex-col items-center space-y-8">
+        <div className="relative">
+          <div className={`absolute inset-0 rounded-full bg-indigo-400 blur-3xl opacity-20 transition-all duration-1000 ${status === 'listening' ? 'scale-150' : 'scale-100'}`}></div>
+          <div className={`relative w-64 h-64 rounded-full flex items-center justify-center transition-all duration-500 shadow-2xl ${status === 'speaking' ? 'bg-indigo-600 scale-105' : 'bg-indigo-500'}`}>
             {status === 'connecting' ? (
-                <div className="animate-spin rounded-full h-12 w-12 border-4 border-white border-t-transparent"></div>
+              <div className="animate-spin rounded-full h-16 w-16 border-4 border-white border-t-transparent"></div>
             ) : status === 'speaking' ? (
-              <div className="flex items-center gap-1">
-                <div className="w-2 h-8 bg-white rounded-full animate-bounce"></div>
-                <div className="w-2 h-12 bg-white rounded-full animate-bounce [animation-delay:0.1s]"></div>
-                <div className="w-2 h-16 bg-white rounded-full animate-bounce [animation-delay:0.2s]"></div>
-                <div className="w-2 h-12 bg-white rounded-full animate-bounce [animation-delay:0.3s]"></div>
-                <div className="w-2 h-8 bg-white rounded-full animate-bounce [animation-delay:0.4s]"></div>
+              <div className="flex items-center gap-2">
+                {[0.1, 0.2, 0.3, 0.4, 0.5].map((delay, i) => (
+                  <div key={i} className="w-3 bg-white rounded-full animate-bounce h-12" style={{ animationDelay: `${delay}s` }}></div>
+                ))}
               </div>
             ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-20 w-20 text-white" viewBox="0 0 20 20" fill="currentColor">
-                <path d="M2 10a8 8 0 018-8v8a8 8 0 11-8 0z" />
-                <path d="M12 2.252A8.014 8.014 0 0117.748 8H12V2.252z" />
-              </svg>
+              <div className="animate-pulse">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-32 w-32 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                </svg>
+              </div>
             )}
           </div>
         </div>
-      </div>
-
-      <div className="space-y-4">
-        <h2 className="text-3xl font-bold text-gray-800">
-          {status === 'connecting' ? 'Mă pregătesc...' : status === 'speaking' ? 'Prietenul Bun vorbește' : 'Vă ascult cu drag'}
-        </h2>
-        <div className="flex items-center justify-center gap-2 text-indigo-500">
-            <span className="relative flex h-3 w-3">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-3 w-3 bg-indigo-500"></span>
-            </span>
-            <span className="text-sm font-semibold uppercase tracking-wider">Memorie Activă</span>
-        </div>
-      </div>
-
-      <div className="w-full bg-white/50 backdrop-blur-md p-6 rounded-3xl shadow-inner min-h-[120px] flex flex-col justify-center border border-indigo-100">
-        <p className="text-lg text-gray-700 italic">
-          {transcription || aiResponse || "Spuneți ceva, sunt aici..."}
+        <p className="text-2xl font-semibold text-indigo-900">
+          {status === 'connecting' ? 'Se conectează...' : status === 'speaking' ? 'Vă vorbesc...' : 'Vă ascult cu drag...'}
         </p>
       </div>
 
-      <button
+      <div className="w-full bg-white/80 backdrop-blur-md p-10 rounded-[50px] shadow-2xl min-h-[180px] flex flex-col justify-center border-2 border-indigo-100 mb-8">
+        <p className="text-3xl text-gray-800 font-medium text-center italic leading-relaxed">
+          {transcription || aiResponse || "Sunt aici lângă dumneavoastră..."}
+        </p>
+      </div>
+
+      <button 
         onClick={onStop}
-        className="px-10 py-4 bg-white border-2 border-gray-200 hover:border-red-200 hover:text-red-600 text-gray-600 rounded-full font-semibold transition-all shadow-sm"
+        className="px-10 py-4 bg-white text-gray-500 hover:text-red-600 border-2 border-gray-100 hover:border-red-100 rounded-full font-bold transition-all shadow-md active:scale-95 mb-4"
       >
-        Închide discuția
+        Închideți discuția
       </button>
     </div>
   );
