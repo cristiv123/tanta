@@ -9,7 +9,7 @@ interface CompanionInterfaceProps {
 }
 
 const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
-  const [status, setStatus] = useState<'connecting' | 'listening' | 'speaking'>('connecting');
+  const [status, setStatus] = useState<'connecting' | 'listening' | 'speaking' | 'audio-blocked'>('connecting');
   const [transcription, setTranscription] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [profile, setProfile] = useState('');
@@ -24,6 +24,19 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
   const currentTurnUserText = useRef('');
   const currentTurnAiText = useRef('');
 
+  // Funcție pentru a asigura pornirea contextului audio (browser policy)
+  const resumeAudio = async () => {
+    if (audioContextOutRef.current?.state === 'suspended') {
+      await audioContextOutRef.current.resume();
+    }
+    if (audioContextInRef.current?.state === 'suspended') {
+      await audioContextInRef.current.resume();
+    }
+    if (status === 'audio-blocked') {
+      setStatus('listening');
+    }
+  };
+
   useEffect(() => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
     const currentProfile = memoryService.getUserProfile();
@@ -32,8 +45,18 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
     const setupLive = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioContextInRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-        audioContextOutRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+        
+        // Inițializăm contextele audio
+        const ctxIn = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+        const ctxOut = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+        
+        audioContextInRef.current = ctxIn;
+        audioContextOutRef.current = ctxOut;
+
+        // Verificăm dacă sunt blocate de browser
+        if (ctxOut.state === 'suspended') {
+          setStatus('audio-blocked');
+        }
 
         const sessionPromise = ai.live.connect({
           model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -52,22 +75,22 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
               REGULI:
               1. Imediat ce începe sesiunea, salută utilizatorul cald (ex: "Bună ziua! Mă bucur să ne auzim. Ce mai faceți astăzi?")
               2. Fii empatic, folosește propoziții scurte și clare.
-              3. Ascultă cu răbdare.
+              3. Ascultă cu răbdare. Nu cere utilizatorului să apese pe nimic, totul este vocal.
             `,
             outputAudioTranscription: {},
             inputAudioTranscription: {},
           },
           callbacks: {
             onopen: () => {
-              setStatus('listening');
-              const source = audioContextInRef.current!.createMediaStreamSource(stream);
-              const scriptProcessor = audioContextInRef.current!.createScriptProcessor(4096, 1, 1);
+              if (ctxOut.state !== 'suspended') setStatus('listening');
+              const source = ctxIn.createMediaStreamSource(stream);
+              const scriptProcessor = ctxIn.createScriptProcessor(4096, 1, 1);
               scriptProcessor.onaudioprocess = (e) => {
                 const inputData = e.inputBuffer.getChannelData(0);
                 sessionPromise.then(s => s.sendRealtimeInput({ media: createBlob(inputData) }));
               };
               source.connect(scriptProcessor);
-              scriptProcessor.connect(audioContextInRef.current!.destination);
+              scriptProcessor.connect(ctxIn.destination);
             },
             onmessage: async (message: LiveServerMessage) => {
               if (message.serverContent?.inputTranscription) {
@@ -106,13 +129,14 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
                 nextStartTimeRef.current += audioBuffer.duration;
                 sourcesRef.current.add(source);
               }
-            }
+            },
+            onerror: () => setStatus('audio-blocked')
           }
         });
         sessionRef.current = await sessionPromise;
       } catch (err) {
         console.error('Setup failed:', err);
-        onStop();
+        setStatus('audio-blocked');
       }
     };
 
@@ -133,11 +157,22 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
   };
 
   return (
-    <div className="flex flex-col items-center justify-between w-full h-screen max-w-4xl mx-auto p-8 relative">
+    <div 
+      className="flex flex-col items-center justify-between w-full h-screen max-w-4xl mx-auto p-8 relative"
+      onClick={resumeAudio} // Orice click pe ecran activează sunetul dacă e blocat de browser
+    >
+      {/* Overlay subtil în caz că browserul blochează sunetul */}
+      {status === 'audio-blocked' && (
+        <div className="absolute inset-0 z-50 bg-indigo-900/10 backdrop-blur-[2px] flex items-center justify-center pointer-events-none">
+          <div className="bg-white/90 p-6 rounded-2xl shadow-xl text-indigo-900 font-bold animate-bounce border-2 border-indigo-200">
+            Atingeți oriunde pentru a începe conversația
+          </div>
+        </div>
+      )}
+
       <div className="w-full space-y-4">
-        <h1 className="text-3xl font-bold text-indigo-900 text-center">Prietenul Bun</h1>
+        <h1 className="text-3xl font-bold text-indigo-900 text-center tracking-tight">Prietenul Bun</h1>
         <div className="bg-white/50 border border-white p-4 rounded-3xl shadow-sm">
-          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest mb-1 text-center">Ce am reținut:</p>
           <p className="text-gray-600 italic text-center text-sm leading-tight">"{profile}"</p>
         </div>
       </div>
@@ -164,22 +199,24 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
           </div>
         </div>
         <p className="text-2xl font-semibold text-indigo-900">
-          {status === 'connecting' ? 'Se conectează...' : status === 'speaking' ? 'Vă vorbesc...' : 'Vă ascult cu drag...'}
+          {status === 'connecting' ? 'Pregătesc vocea...' : status === 'speaking' ? 'Vă vorbesc...' : 'Vă ascult cu drag...'}
         </p>
       </div>
 
-      <div className="w-full bg-white/80 backdrop-blur-md p-10 rounded-[50px] shadow-2xl min-h-[180px] flex flex-col justify-center border-2 border-indigo-100 mb-8">
-        <p className="text-3xl text-gray-800 font-medium text-center italic leading-relaxed">
-          {transcription || aiResponse || "Sunt aici lângă dumneavoastră..."}
+      <div className="w-full bg-white/90 backdrop-blur-md p-10 rounded-[50px] shadow-2xl min-h-[200px] flex flex-col justify-center border-2 border-indigo-50 mb-8 transform transition-all">
+        <p className="text-3xl text-gray-800 font-medium text-center italic leading-snug">
+          {transcription || aiResponse || "Bună ziua! Sunt gata să vă ascult."}
         </p>
       </div>
 
-      <button 
-        onClick={onStop}
-        className="px-10 py-4 bg-white text-gray-500 hover:text-red-600 border-2 border-gray-100 hover:border-red-100 rounded-full font-bold transition-all shadow-md active:scale-95 mb-4"
-      >
-        Închideți discuția
-      </button>
+      <div className="pb-4 opacity-40 hover:opacity-100 transition-opacity">
+        <button 
+          onClick={(e) => { e.stopPropagation(); onStop(); }}
+          className="text-gray-400 hover:text-red-500 text-sm font-bold uppercase tracking-widest"
+        >
+          Închideți discuția
+        </button>
+      </div>
     </div>
   );
 };
