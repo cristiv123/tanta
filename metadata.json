@@ -1,0 +1,7 @@
+{
+  "name": "tanta",
+  "description": "O aplicație de suport emoțional pentru bătrâni, oferind un companion virtual care ascultă și vorbește în limba română, fără a fi nevoie de interacțiune tactilă.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
