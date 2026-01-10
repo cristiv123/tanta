@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
 import { encode, decode, decodeAudioData } from '../services/audioUtils';
+import { memoryService } from '../services/memoryService';
 
 interface CompanionInterfaceProps {
   onStop: () => void;
@@ -18,8 +19,13 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const sessionRef = useRef<any>(null);
 
+  // Buffer pentru acumularea textului înainte de salvare în memorie
+  const currentTurnUserText = useRef('');
+  const currentTurnAiText = useRef('');
+
   useEffect(() => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+    const pastMemory = memoryService.getFormattedMemory();
     
     const setupLive = async () => {
       try {
@@ -33,18 +39,20 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
           config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: {
-              voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }, // Kore sounds friendly/elder-appropriate
+              voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
             },
             systemInstruction: `
-              Ești un companion digital cald, răbdător și empatic numit 'Prietenul Bun', creat special pentru persoanele în vârstă din România.
-              Rolul tău principal este să alini singurătatea prin conversație. 
+              Ești un companion digital cald, răbdător și empatic numit 'Prietenul Bun'.
+              
+              CONTEXT IMPORTANT (Amintirile tale despre acest utilizator):
+              ${pastMemory}
+              
               INSTRUCȚIUNI:
               1. Vorbește EXCLUSIV în limba română.
-              2. Folosește un ton calm, respectos (folosește 'dumneavoastră') și cald.
-              3. Răspunde scurt și clar, fără a copleși utilizatorul cu prea multă informație deodată.
-              4. Dacă utilizatorul tace, poți pune întrebări blânde despre ziua lui, despre amintiri frumoase sau despre starea lui de bine.
-              5. Ești un ascultător activ. Confirmă că auzi ce spune prin interjecții calde dacă e cazul.
-              6. Aceasta este o discuție asincronă naturală - nu aștepta comenzi, fii un prieten care stă la masă cu ei.
+              2. Folosește un ton calm, respectos și cald. Folosește 'dumneavoastră'.
+              3. Răspunde scurt și clar.
+              4. Folosește amintirile de mai sus pentru a personaliza discuția (ex: întreabă despre lucruri menționate anterior).
+              5. Ești un ascultător activ.
             `,
             outputAudioTranscription: {},
             inputAudioTranscription: {},
@@ -67,40 +75,42 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
               scriptProcessor.connect(audioContextInRef.current!.destination);
             },
             onmessage: async (message: LiveServerMessage) => {
-              // Handle transcription updates for visual feedback (even if secondary)
               if (message.serverContent?.inputTranscription) {
-                setTranscription(prev => prev + message.serverContent!.inputTranscription!.text);
+                const text = message.serverContent.inputTranscription.text;
+                setTranscription(prev => prev + text);
+                currentTurnUserText.current += text;
               }
               if (message.serverContent?.outputTranscription) {
-                setAiResponse(prev => prev + message.serverContent!.outputTranscription!.text);
+                const text = message.serverContent.outputTranscription.text;
+                setAiResponse(prev => prev + text);
+                currentTurnAiText.current += text;
               }
+              
               if (message.serverContent?.turnComplete) {
+                // Salvăm în memorie la finalul fiecărui tur de conversație
+                if (currentTurnUserText.current) memoryService.saveTurn('user', currentTurnUserText.current);
+                if (currentTurnAiText.current) memoryService.saveTurn('model', currentTurnAiText.current);
+                
+                // Resetăm bufferele locale
+                currentTurnUserText.current = '';
+                currentTurnAiText.current = '';
                 setTranscription('');
                 setAiResponse('');
               }
 
-              // Handle audio playback
               const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
               if (base64Audio && audioContextOutRef.current) {
                 setStatus('speaking');
                 nextStartTimeRef.current = Math.max(nextStartTimeRef.current, audioContextOutRef.current.currentTime);
                 
-                const audioBuffer = await decodeAudioData(
-                  decode(base64Audio),
-                  audioContextOutRef.current,
-                  24000,
-                  1
-                );
-                
+                const audioBuffer = await decodeAudioData(decode(base64Audio), audioContextOutRef.current, 24000, 1);
                 const source = audioContextOutRef.current.createBufferSource();
                 source.buffer = audioBuffer;
                 source.connect(audioContextOutRef.current.destination);
                 
                 source.onended = () => {
                   sourcesRef.current.delete(source);
-                  if (sourcesRef.current.size === 0) {
-                    setStatus('listening');
-                  }
+                  if (sourcesRef.current.size === 0) setStatus('listening');
                 };
                 
                 source.start(nextStartTimeRef.current);
@@ -108,12 +118,12 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
                 sourcesRef.current.add(source);
               }
 
-              // Handle Interruption
               if (message.serverContent?.interrupted) {
                 sourcesRef.current.forEach(s => s.stop());
                 sourcesRef.current.clear();
                 nextStartTimeRef.current = 0;
                 setStatus('listening');
+                // Chiar dacă e întrerupt, ce s-a zis până acum rămâne în bufferele de transcriere
               }
             },
             onerror: (e) => console.error('Gemini Live Error:', e),
@@ -152,11 +162,9 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
   return (
     <div className="flex flex-col items-center justify-center space-y-12 text-center w-full max-w-2xl px-6">
       <div className="relative">
-        {/* Animated Rings */}
         <div className={`absolute inset-0 rounded-full bg-indigo-200 blur-xl opacity-50 ${status === 'listening' ? 'pulse-ring' : ''}`}></div>
         <div className={`absolute inset-0 rounded-full bg-indigo-400 blur-2xl opacity-30 ${status === 'speaking' ? 'animate-pulse' : ''}`}></div>
         
-        {/* Main Visual Avatar */}
         <div className={`relative w-48 h-48 rounded-full flex items-center justify-center transition-all duration-500 shadow-2xl ${status === 'speaking' ? 'bg-indigo-600 scale-110' : 'bg-indigo-500'}`}>
           <div className="flex flex-col items-center">
             {status === 'connecting' ? (
@@ -181,17 +189,19 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
 
       <div className="space-y-4">
         <h2 className="text-3xl font-bold text-gray-800">
-          {status === 'connecting' ? 'Mă pregătesc...' : status === 'speaking' ? 'Vă ascult cu drag...' : 'Suntem împreună'}
+          {status === 'connecting' ? 'Mă pregătesc...' : status === 'speaking' ? 'Prietenul Bun vorbește' : 'Vă ascult cu drag'}
         </h2>
-        <p className="text-xl text-gray-500 font-medium">
-          {status === 'speaking' ? 'Prietenul Bun vorbește' : 'Vă rog, spuneți-mi orice doriți'}
-        </p>
+        <div className="flex items-center justify-center gap-2 text-indigo-500">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+            </svg>
+            <span className="text-sm font-semibold uppercase tracking-wider">Memorie Activă</span>
+        </div>
       </div>
 
-      {/* Visual Feedback of Transcriptions */}
       <div className="w-full bg-white/50 backdrop-blur-md p-6 rounded-3xl shadow-inner min-h-[120px] flex flex-col justify-center border border-indigo-100">
         <p className="text-lg text-gray-700 italic">
-          {transcription || aiResponse || "..."}
+          {transcription || aiResponse || "Spuneți ceva..."}
         </p>
       </div>
 
@@ -201,10 +211,6 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
       >
         Închide discuția
       </button>
-
-      <div className="fixed bottom-8 text-sm text-gray-400 font-medium">
-        Interacțiune 100% vocală. Nu este nevoie să atingeți ecranul.
-      </div>
     </div>
   );
 };

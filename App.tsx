@@ -1,11 +1,11 @@
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState } from 'react';
 import CompanionInterface from './components/CompanionInterface';
-import { GoogleGenAI } from '@google/genai';
+import { memoryService } from './services/memoryService';
 
 const App: React.FC = () => {
   const [isActive, setIsActive] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   const startCompanion = () => {
     setIsActive(true);
@@ -13,6 +13,12 @@ const App: React.FC = () => {
 
   const stopCompanion = () => {
     setIsActive(false);
+  };
+
+  const resetMemory = () => {
+    memoryService.clearMemory();
+    setShowResetConfirm(true);
+    setTimeout(() => setShowResetConfirm(false), 3000);
   };
 
   return (
@@ -27,7 +33,7 @@ const App: React.FC = () => {
           <div className="space-y-4">
             <h1 className="text-4xl font-bold text-gray-800">Prietenul Bun</h1>
             <p className="text-xl text-gray-600 leading-relaxed">
-              Bună ziua! Sunt aici să vă ascult și să vorbim. Apăsați butonul de mai jos pentru a începe conversația noastră.
+              Bună ziua! Sunt aici să vă ascult și să vorbim.
             </p>
           </div>
           <button
@@ -36,18 +42,18 @@ const App: React.FC = () => {
           >
             <span>Începe discuția</span>
           </button>
-          <p className="text-sm text-gray-400">
-            Nu este nevoie să apăsați alte butoane după pornire. Pur și simplu vorbiți.
-          </p>
+          
+          <div className="pt-4 border-t border-gray-100">
+            <button 
+              onClick={resetMemory}
+              className="text-sm text-gray-400 hover:text-red-400 transition-colors underline underline-offset-4"
+            >
+              {showResetConfirm ? "Amintiri șterse!" : "Șterge amintirile vechi"}
+            </button>
+          </div>
         </div>
       ) : (
         <CompanionInterface onStop={stopCompanion} />
-      )}
-      
-      {error && (
-        <div className="fixed bottom-4 left-4 right-4 bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded shadow-lg">
-          <p>{error}</p>
-        </div>
       )}
     </div>
   );
