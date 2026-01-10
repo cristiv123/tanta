@@ -19,15 +19,17 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const sessionRef = useRef<any>(null);
 
-  // Buffer pentru acumularea textului înainte de salvare în memorie
   const currentTurnUserText = useRef('');
   const currentTurnAiText = useRef('');
 
   useEffect(() => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-    const pastMemory = memoryService.getFormattedMemory();
     
     const setupLive = async () => {
+      // CITIREA MEMORIEI CHIAR ÎNAINTE DE CONECTARE
+      const pastHistory = memoryService.getFormattedMemory();
+      const currentProfile = memoryService.getUserProfile();
+
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         
@@ -44,15 +46,18 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
             systemInstruction: `
               Ești un companion digital cald, răbdător și empatic numit 'Prietenul Bun'.
               
-              CONTEXT IMPORTANT (Amintirile tale despre acest utilizator):
-              ${pastMemory}
+              CONTEXTUL TĂU (Ceea ce știi despre utilizator):
+              ${currentProfile}
               
-              INSTRUCȚIUNI:
-              1. Vorbește EXCLUSIV în limba română.
-              2. Folosește un ton calm, respectos și cald. Folosește 'dumneavoastră'.
-              3. Răspunde scurt și clar.
-              4. Folosește amintirile de mai sus pentru a personaliza discuția (ex: întreabă despre lucruri menționate anterior).
-              5. Ești un ascultător activ.
+              ISTORICUL RECENT:
+              ${pastHistory}
+              
+              INSTRUCȚIUNI CRITICE:
+              1. Vorbește EXCLUSIV în limba română, calm și cald (folosește 'dumneavoastră').
+              2. Dacă utilizatorul îți spune detalii despre viața lui (nume, copii, pasiuni, ce a mâncat, cum se simte), REȚINE-LE.
+              3. Folosește informațiile din "CONTEXTUL TĂU" pentru a personaliza discuția. Dacă știi cum îl cheamă, spune-i pe nume.
+              4. Fii concis. Nu ține prelegeri lungi.
+              5. Ești un prieten vechi care a trecut pe la el la o cafea.
             `,
             outputAudioTranscription: {},
             inputAudioTranscription: {},
@@ -87,11 +92,19 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
               }
               
               if (message.serverContent?.turnComplete) {
-                // Salvăm în memorie la finalul fiecărui tur de conversație
-                if (currentTurnUserText.current) memoryService.saveTurn('user', currentTurnUserText.current);
-                if (currentTurnAiText.current) memoryService.saveTurn('model', currentTurnAiText.current);
+                // SALVARE IMEDIATĂ LA FINALUL TURULUI
+                if (currentTurnUserText.current.trim()) {
+                  memoryService.saveTurn('user', currentTurnUserText.current);
+                }
+                if (currentTurnAiText.current.trim()) {
+                  memoryService.saveTurn('model', currentTurnAiText.current);
+                  // Opțional: Aici s-ar putea adăuga o logică de actualizare a profilului
+                  // Pentru simplitate, bazăm memoria pe istoricul recent care este injectat la start
+                }
                 
-                // Resetăm bufferele locale
+                // Actualizăm profilul automat bazat pe tot ce am vorbit până acum (cea mai simplă formă de sumarizare este să cerem AI-ului să facă asta, dar aici ne bazăm pe istoric)
+                // Într-o versiune viitoare, am putea folosi un model separat de text pentru a actualiza Profilul.
+                
                 currentTurnUserText.current = '';
                 currentTurnAiText.current = '';
                 setTranscription('');
@@ -102,17 +115,14 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
               if (base64Audio && audioContextOutRef.current) {
                 setStatus('speaking');
                 nextStartTimeRef.current = Math.max(nextStartTimeRef.current, audioContextOutRef.current.currentTime);
-                
                 const audioBuffer = await decodeAudioData(decode(base64Audio), audioContextOutRef.current, 24000, 1);
                 const source = audioContextOutRef.current.createBufferSource();
                 source.buffer = audioBuffer;
                 source.connect(audioContextOutRef.current.destination);
-                
                 source.onended = () => {
                   sourcesRef.current.delete(source);
                   if (sourcesRef.current.size === 0) setStatus('listening');
                 };
-                
                 source.start(nextStartTimeRef.current);
                 nextStartTimeRef.current += audioBuffer.duration;
                 sourcesRef.current.add(source);
@@ -123,7 +133,6 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
                 sourcesRef.current.clear();
                 nextStartTimeRef.current = 0;
                 setStatus('listening');
-                // Chiar dacă e întrerupt, ce s-a zis până acum rămâne în bufferele de transcriere
               }
             },
             onerror: (e) => console.error('Gemini Live Error:', e),
@@ -141,6 +150,10 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
     setupLive();
 
     return () => {
+      // Încercăm o ultimă salvare a textului acumulat înainte de unmount
+      if (currentTurnUserText.current.trim()) memoryService.saveTurn('user', currentTurnUserText.current);
+      if (currentTurnAiText.current.trim()) memoryService.saveTurn('model', currentTurnAiText.current);
+
       if (sessionRef.current) sessionRef.current.close();
       if (audioContextInRef.current) audioContextInRef.current.close();
       if (audioContextOutRef.current) audioContextOutRef.current.close();
@@ -192,22 +205,23 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
           {status === 'connecting' ? 'Mă pregătesc...' : status === 'speaking' ? 'Prietenul Bun vorbește' : 'Vă ascult cu drag'}
         </h2>
         <div className="flex items-center justify-center gap-2 text-indigo-500">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-            </svg>
+            <span className="relative flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-indigo-500"></span>
+            </span>
             <span className="text-sm font-semibold uppercase tracking-wider">Memorie Activă</span>
         </div>
       </div>
 
       <div className="w-full bg-white/50 backdrop-blur-md p-6 rounded-3xl shadow-inner min-h-[120px] flex flex-col justify-center border border-indigo-100">
         <p className="text-lg text-gray-700 italic">
-          {transcription || aiResponse || "Spuneți ceva..."}
+          {transcription || aiResponse || "Spuneți ceva, sunt aici..."}
         </p>
       </div>
 
       <button
         onClick={onStop}
-        className="px-10 py-4 bg-gray-200 hover:bg-red-100 hover:text-red-600 text-gray-600 rounded-full font-semibold transition-all"
+        className="px-10 py-4 bg-white border-2 border-gray-200 hover:border-red-200 hover:text-red-600 text-gray-600 rounded-full font-semibold transition-all shadow-sm"
       >
         Închide discuția
       </button>
