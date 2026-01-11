@@ -19,12 +19,31 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
   const nextStartTimeRef = useRef<number>(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const sessionRef = useRef<any>(null);
+  const proactivityTimerRef = useRef<number | null>(null);
 
   const fullConversationRef = useRef<string>('');
   const currentTurnUserText = useRef('');
   const currentTurnAiText = useRef('');
 
-  // Funcție pentru a asigura pornirea contextului audio (browser policy)
+  const resetProactivityTimer = () => {
+    if (proactivityTimerRef.current) {
+      window.clearTimeout(proactivityTimerRef.current);
+    }
+    
+    // Doar dacă suntem în modul 'listening', pornim timerul de 5 secunde
+    if (status === 'listening' || status === 'connecting') {
+      proactivityTimerRef.current = window.setTimeout(() => {
+        if (sessionRef.current && status === 'listening') {
+          console.log("Nudge trimis pentru proactivitate...");
+          // Trimitem un mesaj de tip text modelului pentru a-l forța să genereze un răspuns proactiv
+          sessionRef.current.sendRealtimeInput({
+            text: "[Utilizatorul nu a răspuns de 5 secunde. Ia inițiativa și pune-i o întrebare caldă lui tanti Marioara despre familie, nepoata Ada, fiul Cristi sau despre ce mai gătește bun azi.]"
+          });
+        }
+      }, 5000);
+    }
+  };
+
   const resumeAudio = async () => {
     if (audioContextOutRef.current?.state === 'suspended') {
       await audioContextOutRef.current.resume();
@@ -34,6 +53,7 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
     }
     if (status === 'audio-blocked') {
       setStatus('listening');
+      resetProactivityTimer();
     }
   };
 
@@ -45,15 +65,12 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
     const setupLive = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        
-        // Inițializăm contextele audio
         const ctxIn = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
         const ctxOut = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
         
         audioContextInRef.current = ctxIn;
         audioContextOutRef.current = ctxOut;
 
-        // Verificăm dacă sunt blocate de browser
         if (ctxOut.state === 'suspended') {
           setStatus('audio-blocked');
         }
@@ -66,23 +83,32 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
               voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
             },
             systemInstruction: `
-              Ești 'Prietenul Bun', un companion cald pentru bătrâni. 
-              CONVERSAȚIA TREBUIE SĂ FIE ÎN LIMBA ROMÂNĂ.
+              Ești 'Prietenul Bun', un companion extrem de cald, răbdător și proactiv pentru tanti Marioara (90 de ani).
               
-              CONTEXT UTILIZATOR: ${currentProfile}
-              ISTORIC: ${memoryService.getFormattedMemory()}
-
-              REGULI:
-              1. Imediat ce începe sesiunea, salută utilizatorul cald (ex: "Bună ziua! Mă bucur să ne auzim. Ce mai faceți astăzi?")
-              2. Fii empatic, folosește propoziții scurte și clare.
-              3. Ascultă cu răbdare. Nu cere utilizatorului să apese pe nimic, totul este vocal.
+              CONTEXT IMPORTANT:
+              - Persoana cu care vorbești este tanti Marioara.
+              - Fiul ei este Cristi.
+              - Nepoata ei este Ada, care este medic stomatolog.
+              - Subiecte de interes: trecutul, familia, sănătatea și gătitul (rețete tradiționale).
+              
+              STIL DE CONVERSAȚIE:
+              1. Vorbește rar, clar și cu un respect deosebit (folosește "dumneavoastră", "tanti Marioara").
+              2. Fii proactiv și curios: dacă ea tace sau răspunde scurt, pune întrebări despre cum era pe vremuri, ce mai face Cristi, cum îi merge Adei la cabinet sau ce mâncare bună a mai pregătit.
+              3. Fii ca un nepot grijuliu sau un prieten vechi de familie.
+              4. Nu cere niciodată să apese pe butoane. Totul este prin voce.
+              5. Începe conversația salutând-o pe nume: "Sărut mâna, tanti Marioara! Ce mă bucur să vă aud glasul. Ce mai faceți astăzi?"
+              
+              ISTORIC RECENT: ${memoryService.getFormattedMemory()}
             `,
             outputAudioTranscription: {},
             inputAudioTranscription: {},
           },
           callbacks: {
             onopen: () => {
-              if (ctxOut.state !== 'suspended') setStatus('listening');
+              if (ctxOut.state !== 'suspended') {
+                setStatus('listening');
+                resetProactivityTimer();
+              }
               const source = ctxIn.createMediaStreamSource(stream);
               const scriptProcessor = ctxIn.createScriptProcessor(4096, 1, 1);
               scriptProcessor.onaudioprocess = (e) => {
@@ -93,11 +119,14 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
               scriptProcessor.connect(ctxIn.destination);
             },
             onmessage: async (message: LiveServerMessage) => {
+              // Resetăm timer-ul la orice activitate (transcriere sau sunet)
+              resetProactivityTimer();
+
               if (message.serverContent?.inputTranscription) {
                 const text = message.serverContent.inputTranscription.text;
                 setTranscription(prev => prev + text);
                 currentTurnUserText.current += text;
-                fullConversationRef.current += " Utilizator: " + text;
+                fullConversationRef.current += " Tanti Marioara: " + text;
               }
               if (message.serverContent?.outputTranscription) {
                 const text = message.serverContent.outputTranscription.text;
@@ -112,10 +141,13 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
                 currentTurnAiText.current = '';
                 setTranscription('');
                 setAiResponse('');
+                resetProactivityTimer();
               }
               const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
               if (base64Audio && audioContextOutRef.current) {
                 setStatus('speaking');
+                if (proactivityTimerRef.current) window.clearTimeout(proactivityTimerRef.current);
+                
                 nextStartTimeRef.current = Math.max(nextStartTimeRef.current, audioContextOutRef.current.currentTime);
                 const audioBuffer = await decodeAudioData(decode(base64Audio), audioContextOutRef.current, 24000, 1);
                 const source = audioContextOutRef.current.createBufferSource();
@@ -123,7 +155,10 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
                 source.connect(audioContextOutRef.current.destination);
                 source.onended = () => {
                   sourcesRef.current.delete(source);
-                  if (sourcesRef.current.size === 0) setStatus('listening');
+                  if (sourcesRef.current.size === 0) {
+                    setStatus('listening');
+                    resetProactivityTimer();
+                  }
                 };
                 source.start(nextStartTimeRef.current);
                 nextStartTimeRef.current += audioBuffer.duration;
@@ -143,12 +178,20 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
     setupLive();
 
     return () => {
+      if (proactivityTimerRef.current) window.clearTimeout(proactivityTimerRef.current);
       if (fullConversationRef.current) memoryService.updatePermanentProfile(fullConversationRef.current);
       if (sessionRef.current) sessionRef.current.close();
       if (audioContextInRef.current) audioContextInRef.current.close();
       if (audioContextOutRef.current) audioContextOutRef.current.close();
     };
   }, [onStop]);
+
+  // Monitorizăm schimbarea de status pentru a porni timer-ul când trecem în listening
+  useEffect(() => {
+    if (status === 'listening') {
+      resetProactivityTimer();
+    }
+  }, [status]);
 
   const createBlob = (data: Float32Array): Blob => {
     const int16 = new Int16Array(data.length);
@@ -159,13 +202,13 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
   return (
     <div 
       className="flex flex-col items-center justify-between w-full h-screen max-w-4xl mx-auto p-8 relative"
-      onClick={resumeAudio} // Orice click pe ecran activează sunetul dacă e blocat de browser
+      onClick={resumeAudio}
     >
-      {/* Overlay subtil în caz că browserul blochează sunetul */}
       {status === 'audio-blocked' && (
         <div className="absolute inset-0 z-50 bg-indigo-900/10 backdrop-blur-[2px] flex items-center justify-center pointer-events-none">
-          <div className="bg-white/90 p-6 rounded-2xl shadow-xl text-indigo-900 font-bold animate-bounce border-2 border-indigo-200">
-            Atingeți oriunde pentru a începe conversația
+          <div className="bg-white/95 p-8 rounded-3xl shadow-2xl text-indigo-900 font-bold animate-bounce border-2 border-indigo-100 text-center max-w-xs">
+            <p className="text-xl">Sărut mâna, tanti Marioara!</p>
+            <p className="text-sm font-normal mt-2 opacity-70 text-gray-600">Atingeți ecranul pentru a ne auzi.</p>
           </div>
         </div>
       )}
@@ -199,17 +242,17 @@ const CompanionInterface: React.FC<CompanionInterfaceProps> = ({ onStop }) => {
           </div>
         </div>
         <p className="text-2xl font-semibold text-indigo-900">
-          {status === 'connecting' ? 'Pregătesc vocea...' : status === 'speaking' ? 'Vă vorbesc...' : 'Vă ascult cu drag...'}
+          {status === 'connecting' ? 'Vă caut...' : status === 'speaking' ? 'Vă vorbesc...' : 'Vă ascult cu drag...'}
         </p>
       </div>
 
-      <div className="w-full bg-white/90 backdrop-blur-md p-10 rounded-[50px] shadow-2xl min-h-[200px] flex flex-col justify-center border-2 border-indigo-50 mb-8 transform transition-all">
+      <div className="w-full bg-white/90 backdrop-blur-md p-10 rounded-[50px] shadow-2xl min-h-[220px] flex flex-col justify-center border-2 border-indigo-50 mb-8 transform transition-all">
         <p className="text-3xl text-gray-800 font-medium text-center italic leading-snug">
-          {transcription || aiResponse || "Bună ziua! Sunt gata să vă ascult."}
+          {transcription || aiResponse || "Sărut mâna! Sunt aici, vă ascult."}
         </p>
       </div>
 
-      <div className="pb-4 opacity-40 hover:opacity-100 transition-opacity">
+      <div className="pb-4 opacity-30 hover:opacity-100 transition-opacity">
         <button 
           onClick={(e) => { e.stopPropagation(); onStop(); }}
           className="text-gray-400 hover:text-red-500 text-sm font-bold uppercase tracking-widest"

@@ -10,6 +10,8 @@ export interface MemoryEntry {
   timestamp: number;
 }
 
+const INITIAL_PROFILE = "Utilizatorul este tanti Marioara, are 90 de ani. Fiul ei se numește Cristi. Nepoata ei se numește Ada și este medic stomatolog. Îi place să povestească despre trecut, despre familie, sănătate și rețete de mâncare tradițională.";
+
 export const memoryService = {
   saveTurn(role: 'user' | 'model', text: string) {
     if (!text.trim()) return;
@@ -23,7 +25,7 @@ export const memoryService = {
     const history = this.getHistory();
     if (history.length === 0) return "Nu există conversații recente.";
     return history.map(entry => 
-      `${entry.role === 'user' ? 'Utilizatorul' : 'Tu'} a spus: "${entry.text}"`
+      `${entry.role === 'user' ? 'Tanti Marioara' : 'Tu'} a spus: "${entry.text}"`
     ).join('\n');
   },
 
@@ -33,10 +35,14 @@ export const memoryService = {
   },
 
   getUserProfile(): string {
-    return localStorage.getItem(PROFILE_KEY) || "Încă nu ne cunoaștem foarte bine. Știu doar că ești o persoană dragă mie.";
+    const stored = localStorage.getItem(PROFILE_KEY);
+    if (!stored) {
+      localStorage.setItem(PROFILE_KEY, INITIAL_PROFILE);
+      return INITIAL_PROFILE;
+    }
+    return stored;
   },
 
-  // Funcție nouă pentru a actualiza profilul permanent
   async updatePermanentProfile(fullConversation: string) {
     if (!fullConversation.trim()) return;
     
@@ -46,13 +52,13 @@ export const memoryService = {
       
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `Analizează această conversație și actualizează profilul utilizatorului. 
-        Păstrează informațiile vechi importante și adaugă fapte noi (nume, preferințe, familie, stare de spirit).
+        contents: `Analizează această conversație și actualizează profilul lui tanti Marioara (90 ani). 
+        Păstrează detaliile despre Cristi și Ada (nepoata stomatolog).
         
         PROFIL VECHI: ${currentProfile}
         CONVERSAȚIE NOUĂ: ${fullConversation}
         
-        Returnează doar noul profil, scurt și la persoana a III-a (ex: "Se numește Ion. Îi place ceaiul de tei. Are un nepot Matei.").`,
+        Returnează doar noul profil, scurt, la persoana a III-a, păstrând tonul cald.`,
       });
 
       const newProfile = response.text?.trim();
